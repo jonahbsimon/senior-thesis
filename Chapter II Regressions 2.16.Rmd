@@ -1,0 +1,396 @@
+---
+title: "Chapter II Regressions 2.16"
+author: "Jonah Simon"
+date: "2026-03-08"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+nyt <- read.csv("C:/Users/jonah/Downloads/Thesis Datasets/Times Index.csv")
+hearings <- read.csv("C:/Users/jonah/Downloads/Thesis Datasets/Questions Database Fullest.csv")
+nyt_civil <- read.csv("C:/Users/Jonah/Downloads/Thesis Datasets/Times Index Civil Rights.csv")
+scotus <- read.csv("C:/Users/jonah/Downloads/Thesis Datasets/SCOTUS Major Issues.csv")
+```
+
+```{r}
+hearings <- hearings |> # filtering to only senate questions
+  filter(speak == 1)  
+```
+
+```{r}
+year_min <- 1946L # defining time scope
+year_max <- 2010L
+all_years <- year_min:year_max
+```
+
+```{r}
+lag_10yr_avg <- function(x, window = 10) { # creating 10-year average time specification
+  out <- rep(NA_real_, length(x))
+  for (i in seq_along(x)) {
+    start <- max(1, i - window)
+    end   <- i - 1
+    if (end < start) out[i] <- NA_real_ else out[i] <- mean(x[start:end], na.rm = TRUE)
+  }
+  out
+}
+```
+
+```{r}
+spearman_test <- function(x, y) { # creating spearman correlation function
+  d <- tibble(x = x, y = y) |> filter(!is.na(x), !is.na(y))
+
+  if (nrow(d) < 3 || sd(d$x) == 0 || sd(d$y) == 0) {
+    return(tibble(rho = NA_real_, p = NA_real_, n = nrow(d)))
+  }
+
+  ct <- cor.test(d$x, d$y, method = "spearman", exact = FALSE)
+
+  tibble(
+    rho = unname(ct$estimate),
+    p   = ct$p.value,
+    n   = nrow(d)
+  )
+}
+```
+
+
+```{r}
+major_issues <- tibble( # defining major issues
+  issue = c(1,2,3,4,5,6,7,8,9,10,12,13,14,15,16,17,18,19,20,21),
+  label = c(
+    "Macroeconomics",
+    "Civil Rights",
+    "Health",
+    "Agriculture",
+    "Labor, Immigration, and Employment",
+    "Education",
+    "Environment",
+    "Energy",
+    "Immigration",
+    "Transportation",
+    "Law, Crime, and Family Issues",
+    "Social Welfare",
+    "Community Development and Housing",
+    "Banking, Finance and Domestic Commerce",
+    "Defense",
+    "Space, Science, Technology, and Communications",
+    "Foreign Trade",
+    "International Affairs",
+    "Federal Government Operations",
+    "Public Lands and Water Management"
+  )
+)
+
+subissue_labels <- tibble( # defining civil rights subissues
+  subissue = c(201, 202, 204, 205, 206, 207, 208, 209, 20081),
+  label = c(
+    "Minority Discrimination",
+    "Gender & Sexual Orientation Discrimination",
+    "Age Discrimination",
+    "Handicap or Disease Discrimination",
+    "Voting Rights",
+    "Freedom of Speech & Religion",
+    "Right to Privacy",
+    "Anti-Government Activities",
+    "Abortion"
+  )
+)
+```
+
+```{r}
+hearing_issue_base <- hearings |> # creating question share variable for major issues
+  mutate(year = as.integer(year), issue = as.integer(issue)) |>
+  filter(!is.na(year), year >= (year_min + 1L), year <= year_max)
+
+hearing_issue_totals <- hearing_issue_base |>
+  group_by(order, year) |>
+  summarize(total_q = n(), .groups = "drop")
+
+hearing_issue_counts <- hearing_issue_base |>
+  filter(!is.na(issue)) |>
+  group_by(order, year, issue) |>
+  summarize(q_issue = n(), .groups = "drop")
+
+hearing_issue_grid <- hearing_issue_totals |> # grid method applies zeros to years with 0 questions for issue -- I use this method at several points in my analysis to preserve zero years
+  select(order, year, total_q) |>
+  tidyr::expand_grid(issue = major_issues$issue)
+
+hearing_issue_data <- hearing_issue_grid |>
+  left_join(hearing_issue_counts, by = c("order", "year", "issue")) |>
+  mutate(
+    q_issue = replace_na(q_issue, 0L),
+    q_share = ifelse(total_q > 0, q_issue / total_q, NA_real_)
+  ) |>
+  left_join(major_issues, by = "issue") |>
+  arrange(issue, year, order)
+```
+
+```{r}
+nyt_annual_count <- nyt |>  # creating nyt issue share variable
+  mutate(year = as.integer(year)) |>
+  filter(!is.na(year), year >= year_min, year <= year_max) |>
+  group_by(year) |>
+  summarize(nyt_total = n(), .groups = "drop") |>
+  tidyr::complete(year = all_years, fill = list(nyt_total = 0L)) |>
+  arrange(year)
+
+nyt_annual_issue_count <- nyt |>
+  mutate(year = as.integer(year), issue = as.integer(majortopic)) |>
+  filter(!is.na(year), year >= year_min, year <= year_max, !is.na(issue)) |>
+  group_by(issue, year) |>
+  summarize(n_issue = n(), .groups = "drop") |>
+  tidyr::complete(issue = major_issues$issue, year = all_years, fill = list(n_issue = 0L)) |>
+  arrange(issue, year)
+
+nyt_issue_share_data <- nyt_annual_issue_count |>
+  left_join(nyt_annual_count, by = "year") |>
+  group_by(issue) |>
+  arrange(year) |>
+  mutate(
+    share = ifelse(nyt_total > 0, n_issue / nyt_total, 0),
+    lag1  = lag(share, 1),
+    avg10 = lag_10yr_avg(share)
+  ) |>
+  ungroup() |>
+  left_join(major_issues, by = "issue") |>
+  arrange(issue, year)
+```
+
+```{r}
+scotus_issue_counts <- scotus |> # creating Supreme Court docket count variable
+  mutate(year = as.integer(year), issue = as.integer(majortopic)) |>
+  filter(!is.na(year), year >= year_min, year <= year_max, !is.na(issue)) |>
+  group_by(issue, year) |>
+  summarize(cases = n(), .groups = "drop") |>
+  tidyr::complete(issue = major_issues$issue, year = all_years, fill = list(cases = 0L)) |>
+  group_by(issue) |>
+  arrange(year) |>
+  mutate(
+    lag1  = lag(cases, 1),
+    avg10 = lag_10yr_avg(cases)
+  ) |>
+  ungroup() |>
+  left_join(major_issues, by = "issue") |>
+  arrange(issue, year)
+```
+
+```{r}
+nyt_scotus_major <- nyt_issue_share_data |> # correlating salience measures
+  select(issue, year, share_lag1 = lag1, share_avg10 = avg10) |>
+  left_join(
+    scotus_issue_counts |>
+      select(issue, year, cases_lag1 = lag1, cases_avg10 = avg10),
+    by = c("issue", "year")
+  )
+
+nyt_scotus_major_results <- nyt_scotus_major |>
+  group_by(issue) |>
+  group_modify(~{
+    lag1  <- spearman_test(.x$share_lag1,  .x$cases_lag1)
+    avg10 <- spearman_test(.x$share_avg10, .x$cases_avg10)
+
+    tibble(
+      rho_lag1  = lag1$rho,
+      p_lag1    = lag1$p,
+      n_lag1    = lag1$n,
+      rho_avg10 = avg10$rho,
+      p_avg10   = avg10$p,
+      n_avg10   = avg10$n
+    )
+  }) |>
+  ungroup() |>
+  left_join(major_issues, by = "issue")
+
+print(nyt_scotus_major_results)
+```
+
+```{r}
+hearings_major_model <- hearing_issue_data |> # fitting major issue spearman regressions for both salience measures
+  select(issue, year, order, q_share) |>
+  left_join(
+    nyt_issue_share_data |>
+      select(issue, year, nyt_lag1 = lag1, nyt_avg10 = avg10),
+    by = c("issue", "year")
+  ) |>
+  left_join(
+    scotus_issue_counts |>
+      select(issue, year, scotus_lag1 = lag1, scotus_avg10 = avg10),
+    by = c("issue", "year")
+  )
+
+hearings_major_results <- hearings_major_model |>
+  group_by(issue) |>
+  group_modify(~{
+    a <- spearman_test(.x$q_share, .x$nyt_lag1)
+    b <- spearman_test(.x$q_share, .x$nyt_avg10)
+    c <- spearman_test(.x$q_share, .x$scotus_lag1)
+    d <- spearman_test(.x$q_share, .x$scotus_avg10)
+
+    tibble(
+      rho_nyt_lag1 = a$rho,  p_nyt_lag1 = a$p,
+      rho_nyt_avg10 = b$rho, p_nyt_avg10 = b$p,
+      rho_scotus_lag1 = c$rho,  p_scotus_lag1 = c$p,
+      rho_scotus_avg10 = d$rho, p_scotus_avg10 = d$p
+    )
+  }) |>
+  ungroup() |>
+  left_join(major_issues, by = "issue")
+
+print(hearings_major_results)
+```
+
+```{r}
+hearing_subissue_base <- hearings |> # creating civil rights subissue question share variable
+  mutate(year = as.integer(year)) |>
+  filter(!is.na(year), year >= (year_min + 1L), year <= year_max)
+
+hearing_subissue_totals <- hearing_subissue_base |>
+  group_by(order, year) |>
+  summarize(total_q = n(), .groups = "drop")
+
+hearing_subissue_data <- map_dfr(subissue_labels$subissue, function(code) {
+
+  q_sub <- hearing_subissue_base |>
+    filter(
+      (!is.na(subissue) & as.character(subissue) == as.character(code)) | # this accounts for multiple coded question entries
+      (!is.na(itemsb1)  & as.character(itemsb1)  == as.character(code)) |
+      (!is.na(itemsb2)  & as.character(itemsb2)  == as.character(code)) |
+      (!is.na(itemsb3)  & as.character(itemsb3)  == as.character(code)) |
+      (!is.na(itemsb4)  & as.character(itemsb4)  == as.character(code)) |
+      (!is.na(itemsb5)  & as.character(itemsb5)  == as.character(code))
+    ) |>
+    group_by(order, year) |>
+    summarize(q_sub = n(), .groups = "drop")
+
+  hearing_subissue_totals |>
+    left_join(q_sub, by = c("order", "year")) |>
+    mutate(
+      q_sub   = replace_na(q_sub, 0L),
+      q_share = ifelse(total_q > 0, q_sub / total_q, NA_real_),
+      subissue = as.integer(code)
+    )
+}) |>
+  left_join(subissue_labels, by = "subissue") |>
+  arrange(subissue, year, order)
+```
+
+```{r}
+nyt_civil_base <- nyt_civil |> # creating nyt subissue shares
+  mutate(year = as.integer(year), subissue = as.integer(subissue)) |>
+  filter(!is.na(year), year >= year_min, year <= year_max, !is.na(subissue))
+
+nyt_civil_share_data <- map_dfr(subissue_labels$subissue, function(code) {
+
+  codes <- if (as.integer(code) == 208L) c(208L, 20081L) else as.integer(code) # includes abortion within privacy count
+
+  count <- nyt_civil_base |>
+    filter(subissue %in% codes) |>
+    group_by(year) |>
+    summarize(n_issue = n(), .groups = "drop") |>
+    tidyr::complete(year = all_years, fill = list(n_issue = 0L)) |>
+    arrange(year)
+
+  count |>
+    left_join(nyt_annual_count, by = "year") |> # calculates share with denominator of total articles, not total civil rights articles
+    mutate(subissue = as.integer(code)) |>
+    arrange(year) |>
+    mutate(
+      share = ifelse(nyt_total > 0, n_issue / nyt_total, 0),
+      lag1  = lag(share, 1),
+      avg10 = lag_10yr_avg(share)
+    )
+}) |>
+  left_join(subissue_labels, by = "subissue") |>
+  arrange(subissue, year)
+```
+
+```{r}
+scotus_subissue_counts <- scotus |> # building supreme court docket count variable at subissue level
+  mutate(year = as.integer(year), subissue = as.integer(subtopic)) |>
+  filter(!is.na(year), year >= year_min, year <= year_max, !is.na(subissue)) |>
+  group_by(subissue, year) |>
+  summarize(cases = n(), .groups = "drop") |>
+  tidyr::complete(subissue = subissue_labels$subissue, year = all_years, fill = list(cases = 0L)) |>
+  group_by(subissue) |>
+  arrange(year) |>
+  mutate(
+    lag1  = lag(cases, 1),
+    avg10 = lag_10yr_avg(cases)
+  ) |>
+  ungroup() |>
+  left_join(subissue_labels, by = "subissue") |>
+  arrange(subissue, year)
+```
+
+```{r}
+nyt_scotus_sub <- nyt_civil_share_data |> # measuring correlation between salience measures at civil rights subissue level
+  select(subissue, year, share_lag1 = lag1, share_avg10 = avg10) |>
+  left_join(
+    scotus_subissue_counts |>
+      select(subissue, year, cases_lag1 = lag1, cases_avg10 = avg10),
+    by = c("subissue", "year")
+  )
+
+nyt_scotus_sub_results <- nyt_scotus_sub |>
+  group_by(subissue) |>
+  group_modify(~{
+    lag1  <- spearman_test(.x$share_lag1,  .x$cases_lag1)
+    avg10 <- spearman_test(.x$share_avg10, .x$cases_avg10)
+
+    tibble(
+      rho_lag1  = lag1$rho,
+      p_lag1    = lag1$p,
+      n_lag1    = lag1$n,
+      rho_avg10 = avg10$rho,
+      p_avg10   = avg10$p,
+      n_avg10   = avg10$n
+    )
+  }) |>
+  ungroup() |>
+  left_join(subissue_labels, by = "subissue")
+
+print(nyt_scotus_sub_results)
+```
+```{r}
+hearings_sub_model <- hearing_subissue_data |> # fitting spearman correlations at civil rights subissue level for hearing share and salience measures
+  select(subissue, year, order, q_share) |>
+  left_join(
+    nyt_civil_share_data |>
+      select(subissue, year, nyt_lag1 = lag1, nyt_avg10 = avg10),
+    by = c("subissue", "year")
+  ) |>
+  left_join(
+    scotus_subissue_counts |>
+      select(subissue, year, scotus_lag1 = lag1, scotus_avg10 = avg10),
+    by = c("subissue", "year")
+  )
+
+hearings_sub_results <- hearings_sub_model |>
+  group_by(subissue) |>
+  group_modify(~{
+    a <- spearman_test(.x$q_share, .x$nyt_lag1)
+    b <- spearman_test(.x$q_share, .x$nyt_avg10)
+    c <- spearman_test(.x$q_share, .x$scotus_lag1)
+    d <- spearman_test(.x$q_share, .x$scotus_avg10)
+
+    tibble(
+      rho_nyt_lag1 = a$rho,  p_nyt_lag1 = a$p,
+      rho_nyt_avg10 = b$rho, p_nyt_avg10 = b$p,
+      rho_scotus_lag1 = c$rho,  p_scotus_lag1 = c$p,
+      rho_scotus_avg10 = d$rho, p_scotus_avg10 = d$p
+    )
+  }) |>
+  ungroup() |>
+  left_join(subissue_labels, by = "subissue")
+
+print(hearings_sub_results)
+```
+

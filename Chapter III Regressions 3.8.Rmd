@@ -1,0 +1,310 @@
+---
+title: "Chapter III Regressions 3.8"
+author: "Jonah Simon"
+date: "2026-02-06"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+```
+
+
+```{r}
+votes <- read.csv("C:/Users/jonah/Downloads/Thesis Datasets/Chapter 3/SCDB Justice Votes and Party.csv")
+hearings <- read.csv("C:/Users/jonah/Downloads/Thesis Datasets/Questions Database Full.csv")
+```
+
+
+```{r}
+hearings <- hearings |> # filtering to Senator questions only
+  filter(speak == 1)
+
+questions_count <- hearings |> # Counting total questions per hearing
+  group_by(justiceID) |>
+  summarize(total_q = n(), .groups = "drop")
+
+issue_count <- hearings |> # Counting subissue questions per hearing
+  group_by(justiceID, subissue) |>
+  summarize(total_sub_q = n(), .groups = "drop")
+
+qshare <- issue_count |> # Developing hearing share variable
+  left_join(questions_count, by = "justiceID") |>   
+  mutate(hearing_share = total_sub_q / total_q) |>
+  select(-total_sub_q, -total_q)
+
+justice_votes <- votes |> # Filtering to usable justices 
+  filter(justiceID %in% c(80, 84, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114))
+
+justice_votes <- justice_votes |> ## Building with Party Variable
+  mutate(withParty = as.integer(appointingParty == direction))
+```
+
+```{r}
+qshare <- qshare |> # Filtering datasets to civil rights subissues
+  filter(subissue %in% c(201, 202, 204, 205, 206, 207, 208, 209))
+
+justice_votes <- justice_votes |>
+  filter(subissue %in% c(201, 202, 204, 205, 206, 207, 208, 209))
+```
+
+```{r}
+alljustice <- left_join(justice_votes, qshare, by = c("justiceID", "subissue")) ## Merging dataframes
+```
+
+```{r}
+alljustice <- alljustice |> # converting NA hearing share values to zeros
+  mutate(hearing_share = replace_na(hearing_share, 0))
+```
+
+```{r}
+alljustice <- alljustice |> # Defining salient issues
+  mutate(
+    is_responsive = as.integer(subissue %in% c(202, 204, 205, 208, 209))
+  )
+```
+
+```{r}
+alljustice <- alljustice |> # Creating 2 time periods
+  filter(justiceID >= 92 & justiceID <= 114)
+
+reagan_justice <- alljustice |>
+  filter(justiceID >= 104 & justiceID <= 114)
+```
+
+
+```{r}
+all_justice_nofe <- glm(withParty ~ hearing_share * is_responsive, # Running logit regressions across 2 time periods
+                         data = alljustice,
+                         family = binomial(link = "logit"))
+
+reagan_justice_nofe <- glm(withParty ~ hearing_share * is_responsive, 
+                            data = reagan_justice,
+                            family = binomial(link = "logit"))
+```
+
+```{r}
+
+all_justice_jfe <- glm(withParty ~ hearing_share * is_responsive + factor(justiceName), # Running logit regressions across 2 time periods
+                         data = alljustice,
+                         family = binomial(link = "logit"))
+
+reagan_justice_jfe <- glm(withParty ~ hearing_share * is_responsive + factor(justiceName), 
+                            data = reagan_justice,
+                            family = binomial(link = "logit"))
+```
+
+```{r}
+all_justice_subfe <- glm(withParty ~ hearing_share * is_responsive + factor(subissue), # Running logit regressions across 2 time periods
+                         data = alljustice,
+                         family = binomial(link = "logit"))
+
+reagan_justice_subfe <- glm(withParty ~ hearing_share * is_responsive + factor(subissue), 
+                            data = reagan_justice,
+                            family = binomial(link = "logit"))
+```
+
+
+```{r}
+all_justice_jsubfe <- glm(withParty ~ hearing_share * is_responsive + factor(justiceName) + factor(subissue), # Running logit regressions across 2 time periods
+                         data = alljustice,
+                         family = binomial(link = "logit"))
+
+reagan_justice_jsubfe <- glm(withParty ~ hearing_share * is_responsive + factor(justiceName) + factor(subissue), 
+                            data = reagan_justice,
+                            family = binomial(link = "logit"))
+```
+
+```{r}
+summary(all_justice_nofe)
+summary(reagan_justice_nofe)
+```
+
+```{r}
+summary(all_justice_jfe)
+summary(reagan_justice_jfe)
+```
+
+```{r}
+summary(all_justice_jsubfe)
+summary(reagan_justice_jsubfe)
+```
+
+```{r}
+library(sandwich)
+library(lmtest)
+
+cluster_coeftest <- function(model, cluster_var) {
+  V <- sandwich::vcovCL(model, cluster = cluster_var, type = "HC1")
+  lmtest::coeftest(model, vcov. = V)
+}
+
+# All Justices
+cluster_coeftest(all_justice_nofe,  alljustice$justiceName)
+cluster_coeftest(all_justice_jfe,   alljustice$justiceName)
+cluster_coeftest(all_justice_subfe, alljustice$justiceName)
+cluster_all <- cluster_coeftest(all_justice_jsubfe,alljustice$justiceName)
+
+
+# Reagan+
+cluster_coeftest(reagan_justice_nofe,  reagan_justice$justiceName)
+cluster_coeftest(reagan_justice_jfe,   reagan_justice$justiceName)
+cluster_coeftest(reagan_justice_subfe, reagan_justice$justiceName)
+cluster_reagan <- cluster_coeftest(reagan_justice_jsubfe,reagan_justice$justiceName)
+
+```
+
+```{r}
+library(modelsummary)
+library(flextable)
+
+models <- list(
+  "All Justices (Justice & Subissue FE)" = all_justice_jsubfe,
+  "Reagan+ (Justice & Subissue FE)" = reagan_justice_jsubfe,
+  "All Justices (Justice FE)" = all_justice_jfe,
+  "Reagan+ (Justice FE)" = reagan_justice_jfe,
+  "All Justices (Subissue FE)" = all_justice_subfe,
+  "Reagan+ (Subissue FE)" = reagan_justice_subfe,
+  "All Justices (no FE)" = all_justice_nofe,
+  "Reagan+ (no FE)" = reagan_justice_nofe,
+  "Cluster All" = cluster_all,
+  "Cluster Reagan" = cluster_reagan
+)
+
+tbl <- modelsummary(
+  models,
+  statistic = "p.value",
+  stars = TRUE,
+  output = "flextable"
+)
+
+tbl
+
+
+
+```
+
+```{r}
+beta_interaction <- coef(reagan_justice_jsubfe)["hearing_share:is_responsive"] 
+(exp(beta_interaction * 0.01) - 1) * 100
+```
+```{r}
+reagan_justice <- reagan_justice |>
+  mutate(
+    appointingParty_bin = ifelse(appointingParty == 1, 1, 0)
+  )
+```
+
+
+
+```{r}
+reagan_party <- glm(withParty ~ appointingParty + factor(subissue),
+                    data = reagan_justice,
+                    family = binomial(link = "logit"))
+
+reagan_justice_party_fe <- glm(withParty ~ appointingParty * hearing_share * is_responsive + factor(subissue),
+                               data = reagan_justice,
+                               family = binomial(link = "logit"))
+
+V_party  <- vcovCL(reagan_party,              cluster = reagan_justice$justiceName, type = "HC1")
+V_triple <- vcovCL(reagan_justice_party_fe,   cluster = reagan_justice$justiceName, type = "HC1")
+
+party_models <- list(
+  "Baseline Party Model" = reagan_party,
+  "Triple Interaction"   = reagan_justice_party_fe
+)
+
+party_vcov <- list(
+  reagan_party = V_party,
+  reagan_justice_party_fe = V_triple
+)
+
+party_tbl <- modelsummary(
+  party_models,
+  vcov = party_vcov,
+  statistic = "p.value",
+  stars = TRUE,
+  output = "flextable"
+)
+
+party_tbl
+```
+
+```{r}
+rep_fix <- reagan_justice |>
+  filter(justiceName != "DHSouter") |>
+  filter(justiceName != "AMKennedy")
+```
+
+```{r}
+library(sandwich)
+library(lmtest)
+library(modelsummary)
+library(flextable)
+
+repfix_party <- glm(withParty ~ appointingParty + factor(subissue),
+                    data = rep_fix,
+                    family = binomial(link = "logit"))
+
+repfix_party_triple <- glm(withParty ~ appointingParty * hearing_share * is_responsive + factor(subissue),
+                           data = rep_fix,
+                           family = binomial(link = "logit"))
+
+V_repfix_party  <- vcovCL(repfix_party,        cluster = rep_fix$justiceName, type = "HC1")
+V_repfix_triple <- vcovCL(repfix_party_triple, cluster = rep_fix$justiceName, type = "HC1")
+
+repfix_models <- list(
+  "Baseline Party Model (rep_fix)" = repfix_party,
+  "Triple Interaction (rep_fix)"   = repfix_party_triple
+)
+
+repfix_vcov <- list(
+  repfix_party        = V_repfix_party,
+  repfix_party_triple = V_repfix_triple
+)
+
+repfix_tbl <- modelsummary(
+  repfix_models,
+  vcov = repfix_vcov,
+  statistic = "p.value",
+  stars = TRUE,
+  output = "flextable"
+)
+
+repfix_tbl
+```
+
+
+```{r}
+library(modelsummary)
+
+repfix_models <- list(
+  "Baseline Party Model (rep_fix)" = repfix_party,
+  "Triple Interaction (rep_fix)"   = repfix_party_triple
+)
+
+repfix_vcov <- list(
+  repfix_party        = V_repfix_party,
+  repfix_party_triple = V_repfix_triple
+)
+
+repfix_tbl <- modelsummary(
+  repfix_models,
+  vcov = repfix_vcov,
+  statistic = "p.value",
+  stars = TRUE,
+  output = "flextable"
+)
+
+repfix_tbl
+```
+
+
+
